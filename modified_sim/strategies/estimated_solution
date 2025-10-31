@@ -1,0 +1,315 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+import csv
+
+# Time factor for TCP actions (TCP takes longer than UDP)
+TCP_TIME_FACTOR = 1.2  # TCP actions take 20% more time than UDP actions
+
+def f1(n, t):
+    """First function: (n/t) * TCP_TIME_FACTOR (now (omega/P_TCP) * time_factor)"""
+    return (n / t) * TCP_TIME_FACTOR
+
+def f2(n, p):
+    """Second function: 1 + (1/p - 1)^n (now 1 + (1/P_UDP - 1)^omega)"""
+    return 1 + (1/p - 1)**n
+
+def find_equality_curve(n, t_range):
+    """Find p values where f1(omega,P_TCP) = f2(omega,P_UDP) for given P_TCP values"""
+    t_values = []
+    p_values = []
+    
+    for t in t_range:
+        f1_val = f1(n, t)
+        
+        # Solve for p: f1_val = 1 + (1/p - 1)^n
+        # (1/P_UDP - 1)^omega = f1_val - 1
+        # 1/P_UDP - 1 = (f1_val - 1)^(1/omega)
+        # 1/P_UDP = 1 + (f1_val - 1)^(1/omega)
+        # P_UDP = 1 / (1 + (f1_val - 1)^(1/omega))
+        
+        if f1_val > 1:  # Only valid when f1_val > 1
+            try:
+                term = (f1_val - 1)**(1/n)
+                p = 1 / (1 + term)
+                
+                # Check if p is in valid range (0, 1]
+                if 0 < p <= 1:
+                    t_values.append(t)
+                    p_values.append(p)
+            except:
+                continue
+    
+    return np.array(t_values), np.array(p_values)
+
+def analyze_protocol_efficiency(omega_values, tcp_prob_range, udp_prob_range, resolution=100):
+    """
+    Analyze TCP vs UDP efficiency for different omega values and probability ranges.
+    
+    Parameters:
+    omega_values: list - Different omega (weight/vehicle count) values to analyze
+    tcp_prob_range: tuple - (min_p_tcp, max_p_tcp) range
+    udp_prob_range: tuple - (min_p_udp, max_p_udp) range
+    resolution: int - Number of points to sample in each probability range
+    
+    Returns:
+    list - Analysis results for CSV export
+    """
+    results = []
+    
+    # Generate probability grids
+    tcp_probs = np.linspace(tcp_prob_range[0], tcp_prob_range[1], resolution)
+    udp_probs = np.linspace(udp_prob_range[0], udp_prob_range[1], resolution)
+    
+    for omega in omega_values:
+        print(f"Analyzing omega = {omega}...")
+        
+        # Find equality curve for this omega
+        tcp_vals, udp_vals = find_equality_curve(omega, tcp_probs)
+        
+        # Analyze grid points
+        for i, p_tcp in enumerate(tcp_probs):
+            for j, p_udp in enumerate(udp_probs):
+                f1_cost = f1(omega, p_tcp)
+                f2_cost = f2(omega, p_udp)
+                
+                # Determine which protocol is better
+                if f1_cost < f2_cost:
+                    better_protocol = "TCP"
+                    cost_difference = f2_cost - f1_cost
+                elif f2_cost < f1_cost:
+                    better_protocol = "UDP"
+                    cost_difference = f1_cost - f2_cost
+                else:
+                    better_protocol = "EQUAL"
+                    cost_difference = 0.0
+                
+                # Check if this point is on the equality curve
+                on_equality_curve = False
+                if len(tcp_vals) > 0:
+                    # Find closest point on equality curve
+                    distances = np.sqrt((tcp_vals - p_tcp)**2 + (udp_vals - p_udp)**2)
+                    min_distance = np.min(distances)
+                    if min_distance < 0.01:  # Tolerance for being "on" the curve
+                        on_equality_curve = True
+                
+                results.append({
+                    'omega': omega,
+                    'p_tcp': round(p_tcp, 4),
+                    'p_udp': round(p_udp, 4),
+                    'tcp_cost': round(f1_cost, 6),
+                    'udp_cost': round(f2_cost, 6),
+                    'better_protocol': better_protocol,
+                    'cost_difference': round(cost_difference, 6),
+                    'on_equality_curve': on_equality_curve
+                })
+    
+    return results
+
+def save_estimated_solution(analysis_results, filename_suffix=""):
+    """
+    Save estimated protocol efficiency analysis to CSV file in Brain/Estimated folder.
+    
+    Parameters:
+    analysis_results: list - Results from analyze_protocol_efficiency()
+    filename_suffix: str - Optional suffix for filename
+    """
+    # Create Brain/Estimated directory if it doesn't exist
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    brain_dir = os.path.join(current_dir, "Brain")
+    estimated_dir = os.path.join(brain_dir, "Estimated")
+    os.makedirs(estimated_dir, exist_ok=True)
+    
+    # Create filename
+    if filename_suffix:
+        filename = f"protocol_efficiency_{filename_suffix}.csv"
+    else:
+        filename = "protocol_efficiency_analysis.csv"
+    
+    filepath = os.path.join(estimated_dir, filename)
+    
+    # Save to CSV
+    print(f"Saving estimated solution to: {filepath}")
+    with open(filepath, 'w', newline='') as csvfile:
+        fieldnames = ['omega', 'p_tcp', 'p_udp', 'tcp_cost', 'udp_cost', 
+                     'better_protocol', 'cost_difference', 'on_equality_curve']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(analysis_results)
+    
+    print(f"Estimated solution saved successfully to: {filepath}")
+    print(f"Total analysis points: {len(analysis_results)}")
+    
+    # Print summary statistics
+    tcp_better = len([r for r in analysis_results if r['better_protocol'] == 'TCP'])
+    udp_better = len([r for r in analysis_results if r['better_protocol'] == 'UDP'])
+    equal_points = len([r for r in analysis_results if r['better_protocol'] == 'EQUAL'])
+    equality_curve_points = len([r for r in analysis_results if r['on_equality_curve']])
+    
+    print(f"Summary:")
+    print(f"  TCP better: {tcp_better} points ({tcp_better/len(analysis_results)*100:.1f}%)")
+    print(f"  UDP better: {udp_better} points ({udp_better/len(analysis_results)*100:.1f}%)")
+    print(f"  Equal cost: {equal_points} points ({equal_points/len(analysis_results)*100:.1f}%)")
+    print(f"  On equality curves: {equality_curve_points} points")
+    
+    return filepath
+
+def generate_comprehensive_analysis():
+    """
+    Generate a comprehensive protocol efficiency analysis and save to CSV.
+    """
+    print("=== COMPREHENSIVE PROTOCOL EFFICIENCY ANALYSIS ===")
+    print("Generating estimated solutions for TCP vs UDP efficiency...")
+    
+    # Define analysis parameters
+    omega_values = [1, 2, 3, 4, 5, 10, 15, 20]  # Different vehicle counts/weights
+    tcp_prob_range = (0.01, 0.99)
+    udp_prob_range = (0.01, 0.99)
+    resolution = 50  # 50x50 grid for each omega
+    
+    # Perform analysis
+    results = analyze_protocol_efficiency(omega_values, tcp_prob_range, udp_prob_range, resolution)
+    
+    # Save results
+    filepath = save_estimated_solution(results, "comprehensive")
+    
+    # Generate additional focused analyses
+    print("\n=== FOCUSED ANALYSES ===")
+    
+    # High omega analysis (many vehicles)
+    print("Generating high-omega analysis...")
+    high_omega_results = analyze_protocol_efficiency([50, 100, 200, 500], 
+                                                   (0.1, 0.9), (0.1, 0.9), 30)
+    save_estimated_solution(high_omega_results, "high_omega")
+    
+    # Low omega analysis (few vehicles)
+    print("Generating low-omega analysis...")
+    low_omega_results = analyze_protocol_efficiency([1, 2, 3], 
+                                                  (0.01, 0.99), (0.01, 0.99), 100)
+    save_estimated_solution(low_omega_results, "low_omega")
+    
+    print("\n=== ANALYSIS COMPLETE ===")
+    return filepath
+
+def main():
+    print("Plotting equality curves where f1(ω,P_TCP) = f2(ω,P_UDP)")
+    print(f"f1 includes TCP time factor: {TCP_TIME_FACTOR}")
+    
+    # Create figure
+    plt.figure(figsize=(8, 8))
+    
+    # Define parameter ranges
+    t_range = np.linspace(0.01, 1.0, 1000)
+    n_values = [1, 2, 3, 4, 5, 10, 100, 1000]
+    
+    # Plot equality curves for different n values
+    colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown', 'pink', 'black']
+    
+    # Collect all equality curves to find envelope
+    all_t_vals = []
+    all_p_vals = []
+    curve_data = []
+    
+    for i, n in enumerate(n_values):
+        t_vals, p_vals = find_equality_curve(n, t_range)
+        if len(t_vals) > 0:
+            curve_data.append((t_vals, p_vals, n, colors[i]))
+            all_t_vals.extend(t_vals)
+            all_p_vals.extend(p_vals)
+    
+    # Convert to arrays for easier processing
+    all_t_vals = np.array(all_t_vals)
+    all_p_vals = np.array(all_p_vals)
+    
+    # Create a grid for region analysis
+    t_grid = np.linspace(0.01, 0.99, 50)
+    p_grid = np.linspace(0.01, 0.99, 50)
+    
+    # Find upper and lower envelopes
+    upper_envelope_p = []
+    lower_envelope_p = []
+    
+    for t in t_grid:
+        # Find all p values for this t across all curves
+        p_values_at_t = []
+        for t_vals, p_vals, n, color in curve_data:
+            if len(t_vals) > 0:
+                # Interpolate to find p at this t
+                if t >= t_vals.min() and t <= t_vals.max():
+                    p_interp = np.interp(t, t_vals, p_vals)
+                    p_values_at_t.append(p_interp)
+        
+        if p_values_at_t:
+            upper_envelope_p.append(max(p_values_at_t))
+            lower_envelope_p.append(min(p_values_at_t))
+        else:
+            upper_envelope_p.append(0.5)  # Default value
+            lower_envelope_p.append(0.5)
+    
+    upper_envelope_p = np.array(upper_envelope_p)
+    lower_envelope_p = np.array(lower_envelope_p)
+    
+    # Create regions
+    # Region where f2 > f1 for all n (above upper envelope)
+    t_upper = np.concatenate([t_grid, [1.0, 0.01]])
+    p_upper = np.concatenate([upper_envelope_p, [1.0, 1.0]])
+    plt.fill(t_upper, p_upper, color='lightblue', alpha=0.3, hatch='///', edgecolor='blue', linewidth=0.5, label='f2 > f1 for all n')
+    
+    # Region where f1 > f2 for all n (below lower envelope)
+    t_lower = np.concatenate([[0.01, 1.0], t_grid[::-1]])
+    p_lower = np.concatenate([[0.0, 0.0], lower_envelope_p[::-1]])
+    plt.fill(t_lower, p_lower, color='lightcoral', alpha=0.3, hatch='...', edgecolor='red', linewidth=0.5, label='f1 > f2 for all n')
+    
+    # Plot equality curves with thinner lines
+    for t_vals, p_vals, n, color in curve_data:
+        plt.plot(t_vals, p_vals, color=color, linewidth=1.5, 
+                label=r'$\omega=${}'.format(n), alpha=0.8)
+        
+        # Add small labels along the curves
+        if len(t_vals) > 10:  # Only add label if curve has enough points
+            # Find a position towards the left part of the curve to avoid overlap
+            left_idx = len(t_vals) // 6  # Use 1/6 position instead of middle
+            label_t = t_vals[left_idx]
+            label_p = p_vals[left_idx]
+            
+            # Add text label with background for better readability
+            plt.text(label_t, label_p, r'$\omega={}$'.format(n), 
+                    fontsize=8, color=color, weight='bold',
+                    bbox=dict(boxstyle='round,pad=0.2', facecolor='white', 
+                             edgecolor=color, alpha=0.8, linewidth=0.5),
+                    ha='center', va='center')
+    
+    plt.xlabel(r'$P_{TCP}$', fontsize=14)
+    plt.ylabel(r'$P_{UDP}$', fontsize=14)
+    plt.title(r'Equality Curves: $f_1(\omega,P_{TCP}) = f_2(\omega,P_{UDP})$' + '\n' + 
+              r'where $f_1 = \frac{\omega \cdot k}{P_{TCP}}$ (k=1.2) and $f_2 = 1+\left(\frac{1}{P_{UDP}}-1\right)^\omega$', fontsize=16)
+    
+    # Add custom legend entries for regions
+    from matplotlib.patches import Patch
+    legend_elements = [plt.Line2D([0], [0], color=color, lw=1.5, label=r'$\omega=${}'.format(n)) 
+                      for _, _, n, color in curve_data]
+    legend_elements.append(Patch(facecolor='lightcoral', alpha=0.3, hatch='...', edgecolor='red', 
+                                label=r'$f_1 < f_2$ for all $\omega$'))
+    legend_elements.append(Patch(facecolor='lightblue', alpha=0.3, hatch='///', edgecolor='blue', 
+                                label=r'$f_2 < f_1$ for all $\omega$'))
+    
+    plt.legend(handles=legend_elements, fontsize=10, bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.grid(True, alpha=0.3)
+    plt.xlim(0, 1)
+    plt.ylim(0, 1)
+    plt.gca().set_aspect('equal', adjustable='box')
+    
+    plt.tight_layout()
+    plt.show()
+    
+    print("Plot displayed showing curves where f1 = f2 for different ω values")
+
+if __name__ == "__main__":
+    import sys
+    
+    if len(sys.argv) > 1 and sys.argv[1] == "analyze":
+        # Run comprehensive analysis and save to CSV
+        generate_comprehensive_analysis()
+    else:
+        # Run original plotting functionality
+        main()
